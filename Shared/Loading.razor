@@ -1,0 +1,14 @@
+@namespace Pokedex.Shared
+@inherits ComponentBase
+
+@if (Visible)
+{
+  <div class="loading" role="status" aria-live="polite" aria-busy="true">
+    <span>@(string.IsNullOrWhiteSpace(Message) ? "Carregando..." : Message)</span>
+  </div>
+}
+
+@code {
+  [Parameter] public bool Visible { get; set; }
+  [Parameter] public string? Message { get; set; }
+}

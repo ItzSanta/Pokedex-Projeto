@@ -1,0 +1,176 @@
+@page "/list"
+@inject IPokeApiService Api
+@inject ILocalStorageService Storage
+@inject IJSRuntime JS
+@inject NavigationManager Nav
+
+<section class="container">
+  <div class="search" role="search">
+    <input @bind="query" @bind:event="oninput" placeholder="Buscar por nome ou ID" aria-label="Buscar Pokémon" @onkeydown="OnKeyDown" />
+    @if (suggestionsVisible && filteredSuggestions.Count > 0)
+    {
+      <div class="suggestions" role="listbox">
+        @foreach (var s in filteredSuggestions)
+        {
+          <div class="suggestion" role="option" @onclick="() => GoToDetail(s.Name)" tabindex="0">@s.Name</div>
+        }
+      </div>
+    }
+  </div>
+
+  @if (errorMsg != null)
+  {
+    <div role="alert">@errorMsg</div>
+  }
+
+  @if (isLoading)
+  {
+    <Pokedex.Shared.Loading Visible="true" />
+  }
+  else
+  {
+    <div class="grid" aria-label="Lista de Pokémons">
+      @foreach (var p in pokemons)
+      {
+        <article class="card" aria-label="Card Pokémon" @onclick="() => GoToDetail(p.Name)" tabindex="0">
+          <div class="card-header">
+            <strong>@p.Name</strong>
+            <span class="card-id">#@p.Id</span>
+          </div>
+          <img src="@p.Sprite" alt="Sprite de @p.Name" loading="lazy" width="96" height="96" />
+          <div class="types">
+            @if (p.Types != null && p.Types.Count > 0)
+            {
+              foreach (var t in p.Types)
+              {
+                <span class="type @t">@t</span>
+              }
+            }
+            else
+            {
+              <span class="tag">sem tipo</span>
+            }
+          </div>
+          @if (p.IsFav)
+          {
+            <div class="fav" aria-label="Favorito">❤</div>
+          }
+        </article>
+      }
+    </div>
+    <div id="index-sentinel" style="height:1px"></div>
+    <Pokedex.Shared.Loading Visible="@isLoadingMore" />
+  }
+</section>
+
+@code {
+  private string query = string.Empty;
+  private bool suggestionsVisible;
+  private List<NamedApiResource> allNames = new();
+  private List<NamedApiResource> filteredSuggestions = new();
+  private bool isLoading = true;
+  private string? errorMsg;
+  private readonly List<CardVM> pokemons = new();
+  private int offset = 0;
+  private const int pageSize = 20;
+  private bool isLoadingMore;
+  private bool endReached;
+  private HashSet<int> loadedIds = new();
+  private DotNetObjectReference<Index>? _selfRef;
+
+  protected override async Task OnInitializedAsync()
+  {
+    try
+    {
+      allNames = await Api.GetAllPokemonNamesAsync();
+      await LoadPage();
+    }
+    catch
+    {
+      errorMsg = "Erro ao carregar dados.";
+    }
+    finally { isLoading = false; }
+  }
+
+protected override async Task OnAfterRenderAsync(bool firstRender)
+{
+  if (_selfRef == null)
+    _selfRef = DotNetObjectReference.Create(this);
+  await JS.InvokeVoidAsync("infiniteScroll.observe", "index-sentinel", _selfRef, "OnIntersect");
+}
+
+  private async Task LoadPage()
+  {
+    if (isLoadingMore || endReached) return;
+    isLoadingMore = true;
+    var page = await Api.GetPokemonPageAsync(offset, pageSize);
+    var favs = await Storage.GetAsync<List<Favorite>>("favorites") ?? new List<Favorite>();
+    foreach (var item in page)
+    {
+      var p = await Api.GetPokemonAsync(item.Name);
+      if (p == null) continue;
+      if (loadedIds.Contains(p.Id)) continue;
+      loadedIds.Add(p.Id);
+      pokemons.Add(new CardVM
+      {
+        Id = p.Id,
+        Name = p.Name,
+        Sprite = p.Sprites.Other?.OfficialArtwork?.FrontDefault ?? p.Sprites.FrontDefault ?? string.Empty,
+        Types = p.Types.Select(t => t.Type.Name).ToList(),
+        IsFav = favs.Any(f => f.PokemonId == p.Id)
+      });
+    }
+    offset += pageSize;
+    pokemons.Sort((a,b) => a.Id.CompareTo(b.Id));
+    if (page.Count < pageSize) endReached = true;
+    isLoadingMore = false;
+    StateHasChanged();
+  }
+
+  private void OnKeyDown(KeyboardEventArgs e)
+  {
+    if (e.Key == "Enter") ExecuteSearch();
+  }
+
+  private void ExecuteSearch()
+  {
+    var input = query.Trim().ToLowerInvariant();
+    if (string.IsNullOrWhiteSpace(input)) return;
+    if (int.TryParse(input, out var id))
+    {
+      if (id <= 0) { errorMsg = "ID deve ser positivo."; return; }
+      GoToDetail(id.ToString());
+    }
+    else
+    {
+      var exact = allNames.FirstOrDefault(n => n.Name.Equals(input, StringComparison.OrdinalIgnoreCase));
+      if (exact != null) GoToDetail(exact.Name);
+      else { suggestionsVisible = true; filteredSuggestions = allNames.Where(n => n.Name.Contains(input)).Take(10).ToList(); }
+    }
+  }
+
+  private void GoToDetail(string key)
+  {
+    suggestionsVisible = false;
+    filteredSuggestions.Clear();
+    Nav.NavigateTo($"/pokemon/{key}");
+  }
+
+  [JSInvokable]
+  public async Task OnIntersect() => await LoadPage();
+
+  public async ValueTask DisposeAsync()
+  {
+    try { await JS.InvokeVoidAsync("infiniteScroll.unobserve", "index-sentinel"); } catch { }
+    _selfRef?.Dispose();
+  }
+
+  private class CardVM
+  {
+    public int Id { get; set; }
+    public string Name { get; set; } = string.Empty;
+    public string Sprite { get; set; } = string.Empty;
+    public List<string> Types { get; set; } = new();
+    public bool IsFav { get; set; }
+  }
+}

@@ -1,0 +1,9 @@
+{
+  "environment": "Development",
+  "hotReload": false,
+  "logging": {
+    "logLevel": {
+      "default": "Information"
+    }
+  }
+}

@@ -1,0 +1,160 @@
+@page "/favoritos"
+@inject ILocalStorageService Storage
+@inject NavigationManager Nav
+@inject IPokeApiService Api
+
+<section class="container">
+  <h2>Favoritos</h2>
+
+  <div class="actions">
+    <input @bind="tagFilter" @bind:event="oninput" placeholder="Filtrar por tags" aria-label="Filtrar favoritos" />
+    <select @bind="typeFilter" @bind:event="onchange" aria-label="Filtrar por tipo">
+      <option value="">Todos os tipos</option>
+      @foreach (var t in allTypes) { <option value="@t">@t</option> }
+    </select>
+    <select @bind="sortBy" aria-label="Ordenar favoritos">
+      <option value="id-asc">ID crescente</option>
+      <option value="id-desc">ID decrescente</option>
+      <option value="note">Com nota primeiro</option>
+      <option value="tags">Mais tags primeiro</option>
+    </select>
+    <button class="btn" @onclick="ClearAll">Limpar todos</button>
+  </div>
+  @if (!string.IsNullOrEmpty(notice))
+  {
+    <div class="loading" role="status">@notice</div>
+  }
+
+  @if (isLoading)
+  {
+    <div role="status">Carregando...</div>
+  }
+  else if (favorites.Count == 0)
+  {
+    <p>Nenhum favorito.</p>
+  }
+  else
+  {
+    <div class="grid">
+      @foreach (var vm in VisibleFavorites())
+      {
+        <article class="card">
+          <div class="card-header">
+            <strong>#@vm.Fav.PokemonId</strong>
+            <button class="btn" @onclick="() => Remove(vm.Fav)">Remover</button>
+          </div>
+          <div style="text-align:center; margin:.5rem 0;">
+            <img src="@vm.Sprite" alt="Sprite" width="96" height="96" />
+          </div>
+          <div class="types" style="text-align:center;">
+            @foreach (var t in vm.Types) { <span class="type @t">@t</span> }
+          </div>
+          <div>
+            <label>Nota</label>
+            <input value="@vm.Fav.Note" @onchange="(e) => EditNote(vm.Fav, e.Value?.ToString() ?? string.Empty)" />
+          </div>
+          <div>
+            <label>Tags</label>
+            <input value="@string.Join(",", vm.Fav.Tags)" @onchange="(e) => EditTags(vm.Fav, e.Value?.ToString() ?? string.Empty)" />
+            <div>
+              @foreach (var t in vm.Fav.Tags) { <span class="tag">@t</span> }
+            </div>
+          </div>
+          <div class="actions">
+            <button class="btn primary" @onclick="@(() => Nav.NavigateTo($"/pokemon/{vm.Fav.PokemonId}"))">Ver detalhes</button>
+          </div>
+        </article>
+      }
+    </div>
+  }
+</section>
+
+@code {
+  private List<Favorite> favorites = new();
+  private List<FavoriteVM> favVMs = new();
+  private string tagFilter = string.Empty;
+  private bool isLoading = true;
+  private string sortBy = "id-asc";
+  private string? notice;
+  private string typeFilter = string.Empty;
+  private readonly List<string> allTypes = new() { "normal","fire","water","grass","electric","ice","fighting","poison","ground","flying","psychic","bug","rock","ghost","dragon","dark","steel","fairy" };
+
+  protected override async Task OnInitializedAsync()
+  {
+    favorites = await Storage.GetAsync<List<Favorite>>("favorites") ?? new List<Favorite>();
+    favVMs.Clear();
+    foreach (var f in favorites)
+    {
+      var p = await Api.GetPokemonAsync(f.PokemonId.ToString());
+      if (p == null) continue;
+      var types = Pokedex.Utils.TypeUtils.NormalizeTypes(p.Types?.Select(t => t.Type.Name));
+      favVMs.Add(new FavoriteVM
+      {
+        Fav = f,
+        Name = p.Name,
+        Sprite = p.Sprites.Other?.OfficialArtwork?.FrontDefault ?? p.Sprites.FrontDefault ?? string.Empty,
+        Types = types
+      });
+    }
+    isLoading = false;
+  }
+
+  private IEnumerable<FavoriteVM> VisibleFavorites()
+  {
+    var f = tagFilter.Trim();
+    var query = favVMs.AsEnumerable();
+    if (!string.IsNullOrWhiteSpace(f))
+      query = query.Where(x => x.Fav.Tags.Any(t => t.Contains(f, StringComparison.OrdinalIgnoreCase)));
+    if (!string.IsNullOrWhiteSpace(typeFilter))
+      query = query.Where(x => Pokedex.Utils.TypeUtils.MatchesType(x.Types, typeFilter));
+    return sortBy switch
+    {
+      "id-desc" => query.OrderByDescending(x => x.Fav.PokemonId),
+      "note" => query.OrderByDescending(x => string.IsNullOrWhiteSpace(x.Fav.Note) ? 0 : 1).ThenBy(x => x.Fav.PokemonId),
+      "tags" => query.OrderByDescending(x => x.Fav.Tags.Count).ThenBy(x => x.Fav.PokemonId),
+      _ => query.OrderBy(x => x.Fav.PokemonId)
+    };
+  }
+
+  private async Task Remove(Favorite f)
+  {
+    favorites.Remove(f);
+    favVMs.RemoveAll(vm => vm.Fav == f);
+    await Storage.SetAsync("favorites", favorites);
+    notice = "Removido dos favoritos";
+  }
+
+  private async Task EditNote(Favorite f, string note)
+  {
+    note = (note ?? string.Empty).Trim();
+    if (note.Length > 200) note = note.Substring(0, 200);
+    f.Note = note;
+    await Storage.SetAsync("favorites", favorites);
+    notice = "Nota salva";
+  }
+
+  private async Task EditTags(Favorite f, string tags)
+  {
+    var parts = (tags ?? string.Empty).Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+      .Select(x => x.ToLowerInvariant()).Distinct().Take(10).ToList();
+    f.Tags = parts;
+    await Storage.SetAsync("favorites", favorites);
+    notice = "Tags salvas";
+  }
+
+  private async Task ClearAll()
+  {
+    favorites.Clear();
+    favVMs.Clear();
+    await Storage.SetAsync("favorites", favorites);
+    notice = "Favoritos limpos";
+  }
+
+  private class FavoriteVM
+  {
+    public Favorite Fav { get; set; } = new Favorite();
+    public string Name { get; set; } = string.Empty;
+    public string Sprite { get; set; } = string.Empty;
+    public List<string> Types { get; set; } = new();
+  }
+}

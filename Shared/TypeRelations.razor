@@ -1,0 +1,107 @@
+@using Pokedex.Models
+@inject IPokeApiService Api
+
+<div class="type-relations">
+    <h3>Relações de Tipo</h3>
+    @if (isLoading)
+    {
+        <div class="loading">Carregando relações...</div>
+    }
+    else if (vm != null)
+    {
+        <div class="relations-grid centered">
+            @if (vm.Weaknesses.Any())
+            {
+                <section class="weaknesses">
+                    <h4>Fraquezas (2×)</h4>
+                    <div class="type-list">
+                        @foreach (var t in vm.Weaknesses)
+                        {
+                            <span class="type @t" title="Recebe dano dobrado (2×) de @Cap(t)" aria-label="Fraqueza: @Cap(t)">@Cap(t)</span>
+                            <span class="badge-mult weak" title="Multiplicador de dano">2×</span>
+                        }
+                    </div>
+                </section>
+            }
+            @if (vm.Resistances.Any())
+            {
+                <section class="resistances">
+                    <h4>Resistências (0.5×)</h4>
+                    <div class="type-list">
+                        @foreach (var t in vm.Resistances)
+                        {
+                            <span class="type @t" title="Recebe metade do dano (0.5×) de @Cap(t)" aria-label="Resistência: @Cap(t)">@Cap(t)</span>
+                            <span class="badge-mult resist" title="Redução de 50%">0,5×</span>
+                        }
+                    </div>
+                </section>
+            }
+            @if (vm.Immunities.Any())
+            {
+                <section class="immunities">
+                    <h4>Imunidades (0×)</h4>
+                    <div class="type-list">
+                        @foreach (var t in vm.Immunities)
+                        {
+                            <span class="type @t" title="Não recebe dano (0×) de @Cap(t)" aria-label="Imunidade: @Cap(t)">@Cap(t)</span>
+                            <span class="badge-mult immune" title="Imunidade">🔒 0×</span>
+                        }
+                    </div>
+                </section>
+            }
+        </div>
+    }
+    else
+    {
+        <p class="notice">Nenhuma relação de tipo disponível.</p>
+    }
+</div>
+
+@code {
+    [Parameter, EditorRequired] public List<string> Types { get; set; } = new();
+    private TypeRelationsVM? vm;
+    private bool isLoading;
+
+    protected override async Task OnParametersSetAsync()
+    {
+        isLoading = true;
+        vm = new();
+        var map = new Dictionary<string, (int weak, int resist, int immune)>();
+        foreach (var t in Types)
+        {
+            var rel = await Api.GetTypeRelationsAsync(t);
+            if (rel?.DamageRelations != null)
+            {
+                foreach (var w in rel.DamageRelations.DoubleDamageFrom)
+                    Add(map, w.Name, 2, 0, 0);
+                foreach (var r in rel.DamageRelations.HalfDamageFrom)
+                    Add(map, r.Name, 0, 2, 0);
+                foreach (var i in rel.DamageRelations.NoDamageFrom)
+                    Add(map, i.Name, 0, 0, 1);
+            }
+        }
+        foreach (var kv in map)
+        {
+            if (kv.Value.immune > 0)
+                vm.Immunities.Add(kv.Key);
+            else if (kv.Value.weak > kv.Value.resist)
+                vm.Weaknesses.Add(kv.Key);
+            else if (kv.Value.resist > kv.Value.weak)
+                vm.Resistances.Add(kv.Key);
+        }
+        vm.Weaknesses = Pokedex.Utils.TypeUtils.NormalizeTypes(vm.Weaknesses).Distinct().ToList();
+        vm.Resistances = Pokedex.Utils.TypeUtils.NormalizeTypes(vm.Resistances).Distinct().ToList();
+        vm.Immunities = Pokedex.Utils.TypeUtils.NormalizeTypes(vm.Immunities).Distinct().ToList();
+        isLoading = false;
+    }
+
+    private static void Add(Dictionary<string, (int w, int r, int i)> map, string name, int w, int r, int i)
+    {
+        if (!map.TryGetValue(name, out var v))
+            v = (0, 0, 0);
+        map[name] = (v.w + w, v.r + r, v.i + i);
+    }
+
+    public static string Cap(string s)
+        => string.IsNullOrWhiteSpace(s) ? s : char.ToUpperInvariant(s[0]) + (s.Length > 1 ? s.Substring(1).ToLowerInvariant() : string.Empty);
+}

@@ -1,0 +1,528 @@
+@page "/"
+@page "/generacoes"
+@inject IPokeApiService Api
+@inject ILocalStorageService Storage
+@inject NavigationManager Nav
+
+<section class="container">
+  <div style="text-align: center; margin-bottom: 1rem; padding: 1rem; background: linear-gradient(135deg, #dc2626, #ef4444); color: white; border-radius: 12px;">
+    <h1 style="margin: 0; font-size: 1.5rem;">🎮 Pokédex - Gerações</h1>
+    <p style="margin: 0.5rem 0 0 0; opacity: 0.9;">Explore todos os Pokémon por geração!</p>
+  </div>
+  
+  <div class="search" role="search">
+    <input @bind="query" @bind:event="oninput" placeholder="Buscar por nome ou ID" aria-label="Buscar Pokémon" @onkeydown="OnKeyDown" />
+    <select @bind="typeFilter" aria-label="Filtrar por tipo" style="min-width:150px;">
+      <option value="">Todos os tipos</option>
+      @foreach (var t in allTypes) { <option value="@t">@Cap(t)</option> }
+    </select>
+    @if (suggestionsVisible && filteredSuggestions.Count > 0)
+    {
+      <div class="suggestions" role="listbox">
+        @foreach (var s in filteredSuggestions)
+        {
+          <div class="suggestion" role="option" @onclick="() => GoToDetail(s.Name)" tabindex="0">@s.Name</div>
+        }
+      </div>
+    }
+  </div>
+
+  <div class="tabs" role="tablist" aria-label="Gerações de Pokémon">
+    @foreach (var g in gens)
+    {
+      var selected = g == activeGen;
+      var isFirst = g == 1;
+      <button class="tab @(selected ? "active" : "") @(isFirst ? "first-gen" : "")" 
+              role="tab" 
+              aria-selected="@selected" 
+              @onclick="(() => SwitchGen(g))"
+              title="@(isFirst ? "Primeira Geração (IDs 1-151)" : $"Geração {g}")">
+        Geração @g
+      </button>
+    }
+  </div>
+
+  
+
+  @if (!string.IsNullOrEmpty(rangeError))
+  {
+    <div role="alert">@rangeError</div>
+  }
+  else if (!string.IsNullOrEmpty(errorMsg))
+  {
+    <div role="alert">@errorMsg</div>
+  }
+  else if (Current.Loading)
+  {
+    <Pokedex.Shared.Loading Visible="true" />
+  }
+  else
+  {
+    <div class="grid" aria-label="Lista de Pokémons da geração">
+      @foreach (var p in VisibleCards())
+      {
+        <article class="card" aria-label="Card Pokémon" @onclick="() => GoToDetail(p.Name)" tabindex="0">
+          <div class="card-header">
+            <strong>@Cap(p.Name)</strong>
+            <span class="card-id">#@p.Id</span>
+          </div>
+          <img src="@p.Sprite" alt="Sprite de @p.Name" loading="lazy" width="96" height="96" />
+          <div class="types">
+            @if (p.Types != null && p.Types.Count > 0)
+            {
+              foreach (var t in p.Types)
+              {
+                <span class="type @t">@Cap(t)</span>
+              }
+            }
+            else
+            {
+              <span class="type normal">Normal</span>
+            }
+          </div>
+          
+        </article>
+      }
+      @if (isLoadingMore)
+      {
+        @for (int i = 0; i < 6; i++)
+        {
+          <article class="card skeleton" aria-hidden="true">
+            <div class="skeleton-line"></div>
+            <div class="skeleton-line" style="width:70%"></div>
+            <div class="skeleton-line" style="width:50%"></div>
+          </article>
+        }
+      }
+    </div>
+    <div id="gen-sentinel" style="height:1px"></div>
+    <Pokedex.Shared.Loading Visible="@isLoadingMore" Message="Carregando mais Pokémon..." />
+  }
+</section>
+
+@code {
+  [Inject] private IJSRuntime JS { get; set; } = default!;
+  private DotNetObjectReference<Generations>? _selfRef;
+  private readonly int[] gens = new[] { 1,2,3,4,5,6,7,8,9 };
+  private int activeGen = 1;
+  private readonly Dictionary<int, GenState> states = new();
+  private string query = string.Empty;
+  private bool suggestionsVisible;
+  private List<NamedApiResource> allNames = new();
+  private List<NamedApiResource> filteredSuggestions = new();
+  private const int pageSize = 20;
+  private readonly Dictionary<int, (int Start, int End)> ranges = new()
+  {
+    {1, (1,151)},
+    {2, (152,251)},
+    {3, (252,386)},
+    {4, (387,493)},
+    {5, (494,649)},
+    {6, (650,721)},
+    {7, (722,809)},
+    {8, (810,905)},
+    {9, (906,1025)}
+  };
+  private string? rangeError;
+  private string? errorMsg;
+  private bool isLoadingMore;
+  
+  private GenState Current => states[activeGen];
+  private readonly Dictionary<int, double> scrollPositions = new();
+  private readonly Dictionary<int, CardVM> cardCache = new();
+  private const string CardCacheKey = "cache:cards";
+
+  protected override async Task OnInitializedAsync()
+  {
+    Console.WriteLine("Generations.OnInitializedAsync: Iniciando carregamento da Pokédex");
+    
+    // Limpar cache se houver problemas
+    var shouldClearCache = false;
+    
+    try
+    {
+      foreach (var g in gens) states[g] = new GenState();
+      Console.WriteLine("Generations.OnInitializedAsync: Estados inicializados para todas as gerações");
+      
+      Console.WriteLine("Generations.OnInitializedAsync: Buscando nomes de Pokémon...");
+      allNames = await Api.GetAllPokemonNamesAsync();
+      Console.WriteLine($"Generations.OnInitializedAsync: {allNames.Count} nomes carregados");
+      
+      // Verificar se nomes foram carregados corretamente
+      if (allNames == null || allNames.Count == 0)
+      {
+        Console.WriteLine("Generations.OnInitializedAsync: Nenhum nome carregado - possível problema de cache");
+        shouldClearCache = true;
+      }
+      
+      ValidateRangesOrFail();
+      Console.WriteLine($"Generations.OnInitializedAsync: Validação de ranges concluída. Erro: {rangeError ?? "nenhum"}");
+      
+      Console.WriteLine("Generations.OnInitializedAsync: Carregando cache de cards...");
+      Dictionary<int, CardVM> cached = await Storage.GetAsync<Dictionary<int, CardVM>>(CardCacheKey) ?? new Dictionary<int, CardVM>();
+      Console.WriteLine($"Generations.OnInitializedAsync: {cached.Count} cards em cache");
+      
+      // Verificar integridade do cache
+      if (cached.Count > 0)
+      {
+        var invalidCards = cached.Values.Where(card => 
+          card == null || 
+          string.IsNullOrEmpty(card.Name) || 
+          card.Id <= 0 ||
+          string.IsNullOrEmpty(card.Sprite)
+        ).ToList();
+        
+        if (invalidCards.Count > 0)
+        {
+          Console.WriteLine($"Generations.OnInitializedAsync: {invalidCards.Count} cards inválidos encontrados no cache");
+          shouldClearCache = true;
+        }
+      }
+      
+      if (shouldClearCache)
+      {
+        Console.WriteLine("Generations.OnInitializedAsync: Limpando cache devido a problemas detectados");
+        await Storage.RemoveAsync(CardCacheKey);
+        cardCache.Clear();
+        Console.WriteLine("Generations.OnInitializedAsync: Cache limpo");
+      }
+      else
+      {
+        foreach (var kv in cached) cardCache[kv.Key] = kv.Value;
+      }
+      
+      Console.WriteLine($"Generations.OnInitializedAsync: Garantindo carregamento da geração ativa: {activeGen}");
+      await EnsureGenLoaded(activeGen);
+      Console.WriteLine("Generations.OnInitializedAsync: Carregamento inicial concluído");
+    }
+    catch (Exception ex)
+    {
+      Console.WriteLine($"Generations.OnInitializedAsync: ERRO CRÍTICO - {ex.Message}");
+      Console.WriteLine($"Generations.OnInitializedAsync: StackTrace - {ex.StackTrace}");
+      errorMsg = $"Erro crítico ao inicializar: {ex.Message}";
+      
+      // Tentar limpar cache em caso de erro crítico
+      try
+      {
+        Console.WriteLine("Generations.OnInitializedAsync: Tentando limpar cache após erro crítico");
+        await Storage.RemoveAsync(CardCacheKey);
+        cardCache.Clear();
+      }
+      catch (Exception cacheEx)
+      {
+        Console.WriteLine($"Generations.OnInitializedAsync: Erro ao limpar cache: {cacheEx.Message}");
+      }
+    }
+  }
+
+  protected override async Task OnAfterRenderAsync(bool firstRender)
+  {
+    Console.WriteLine($"OnAfterRenderAsync: firstRender={firstRender}");
+    
+    if (_selfRef == null)
+    {
+      Console.WriteLine("OnAfterRenderAsync: Criando referência DotNetObjectReference");
+      _selfRef = DotNetObjectReference.Create(this);
+    }
+    
+    // Aguardar um pequeno delay para garantir que o DOM esteja pronto
+    if (firstRender)
+    {
+      Console.WriteLine("OnAfterRenderAsync: Aguardando DOM estar pronto...");
+      await Task.Delay(100);
+    }
+    
+    Console.WriteLine("OnAfterRenderAsync: Configurando observer");
+    await EnsureObserver();
+    
+    if (firstRender)
+    {
+      Console.WriteLine("OnAfterRenderAsync: Primeira renderização concluída");
+    }
+  }
+
+  private async Task EnsureGenLoaded(int g)
+  {
+    Console.WriteLine($"EnsureGenLoaded: Verificando geração {g}");
+    var st = states[g];
+    
+    if (st.Ids.Count == 0)
+    {
+      Console.WriteLine($"EnsureGenLoaded: Geração {g} precisa ser carregada");
+      st.Loading = true;
+      await InvokeAsync(StateHasChanged);
+      
+      try
+      {
+        Console.WriteLine($"EnsureGenLoaded: Construindo IDs sequenciais para geração {g}");
+        st.Ids = Pokedex.Utils.GenerationUtils.BuildSequentialIds(ranges[g]);
+        Console.WriteLine($"EnsureGenLoaded: {st.Ids.Count} IDs construídos para geração {g}");
+        
+        st.Offset = 0;
+        st.Cards.Clear();
+        
+        Console.WriteLine($"EnsureGenLoaded: Carregando primeira página da geração {g}");
+        await LoadPage(st);
+        
+        Console.WriteLine($"EnsureGenLoaded: Geração {g} carregada com sucesso. {st.Cards.Count} cards");
+      }
+      catch (Exception ex)
+      {
+        Console.WriteLine($"EnsureGenLoaded: ERRO ao carregar geração {g} - {ex.Message}");
+        errorMsg = $"Erro ao carregar geração {g}: {ex.Message}";
+      }
+      finally
+      {
+        st.Loading = false;
+        await InvokeAsync(StateHasChanged);
+        Console.WriteLine($"EnsureGenLoaded: Estado de loading da geração {g} finalizado");
+      }
+    }
+    else
+    {
+      Console.WriteLine($"EnsureGenLoaded: Geração {g} já está carregada com {st.Cards.Count} cards");
+    }
+  }
+
+  private async Task LoadPage(GenState st)
+  {
+    if (isLoadingMore || st.EndReached) return;
+    
+    Console.WriteLine($"LoadPage: Iniciando carregamento de página. Offset: {st.Offset}, EndReached: {st.EndReached}");
+    isLoadingMore = true;
+    errorMsg = null;
+    
+    try
+    {
+      var end = Math.Min(st.Offset + pageSize, st.Ids.Count);
+      Console.WriteLine($"LoadPage: Carregando IDs de {st.Offset} até {end} de um total de {st.Ids.Count}");
+      
+      var ids = st.Ids.Skip(st.Offset).Take(end - st.Offset).Where(id => !st.LoadedIds.Contains(id)).ToList();
+      Console.WriteLine($"LoadPage: {ids.Count} IDs para carregar nesta página");
+      
+      var favs = await Storage.GetAsync<List<Favorite>>("favorites") ?? new List<Favorite>();
+      Console.WriteLine($"LoadPage: {favs.Count} favoritos carregados");
+
+      var tasks = ids.Select(async id =>
+      {
+        Console.WriteLine($"LoadPage: Processando ID {id}");
+        
+        if (cardCache.TryGetValue(id, out var cachedCard))
+        {
+          Console.WriteLine($"LoadPage: ID {id} encontrado em cache");
+          cachedCard.IsFav = favs.Any(f => f.PokemonId == cachedCard.Id);
+          return (ok:true, card: cachedCard);
+        }
+        
+        Console.WriteLine($"LoadPage: Buscando ID {id} na API");
+        var p = await Api.GetPokemonAsync(id.ToString());
+        
+        if (p == null) 
+        {
+          Console.WriteLine($"LoadPage: ID {id} retornou null da API");
+          return (ok:false, card:(CardVM?)null);
+        }
+        
+        Console.WriteLine($"LoadPage: ID {id} recebido com sucesso: {p.Name}");
+        var spriteUrl = p.Sprites.Other?.OfficialArtwork?.FrontDefault ?? p.Sprites.FrontDefault ?? string.Empty;
+        
+        if (string.IsNullOrEmpty(spriteUrl))
+        {
+          Console.WriteLine($"LoadPage: ID {id} não tem sprite. Usando placeholder.");
+          spriteUrl = "https://raw.githubusercontent.com/PokeAPI/sprites/master/sprites/pokemon/0.png";
+        }
+        
+      var created = new CardVM
+      {
+        Id = p.Id,
+        Name = p.Name,
+        Sprite = spriteUrl,
+        Types = Pokedex.Utils.TypeUtils.NormalizeTypes(p.Types.Select(t => t.Type.Name)),
+        IsFav = favs.Any(f => f.PokemonId == p.Id)
+      };
+        
+        cardCache[id] = created;
+        Console.WriteLine($"LoadPage: Card criado para ID {id}: {p.Name}");
+        return (ok:true, card: created);
+      }).ToList();
+
+      Console.WriteLine($"LoadPage: Aguardando conclusão de {tasks.Count} tarefas");
+      var result = await Task.WhenAll(tasks);
+      Console.WriteLine($"LoadPage: {result.Length} resultados recebidos");
+      
+      var successCount = 0;
+      for (int i = 0; i < ids.Count; i++)
+      {
+        if (result[i].ok && result[i].card != null)
+        {
+          st.LoadedIds.Add(ids[i]);
+          st.Cards.Add(result[i].card!);
+          successCount++;
+        }
+        else
+        {
+          Console.WriteLine($"LoadPage: Falha ao carregar ID {ids[i]}");
+        }
+      }
+      
+      Console.WriteLine($"LoadPage: {successCount} cards adicionados com sucesso");
+      st.Cards.Sort((a,b) => a.Id.CompareTo(b.Id));
+      st.Offset = end;
+      if (st.Offset >= st.Ids.Count) st.EndReached = true;
+      
+      Console.WriteLine($"LoadPage: Página carregada. Total cards: {st.Cards.Count}, EndReached: {st.EndReached}");
+      StateHasChanged();
+      await Storage.SetAsync(CardCacheKey, cardCache);
+      Console.WriteLine("LoadPage: Cache atualizado");
+    }
+    catch (Exception ex)
+    {
+      Console.WriteLine($"LoadPage: ERRO - {ex.Message}");
+      Console.WriteLine($"LoadPage: StackTrace - {ex.StackTrace}");
+      errorMsg = $"Erro ao carregar dados da geração: {ex.Message}";
+    }
+    finally
+    {
+      isLoadingMore = false;
+      Console.WriteLine("LoadPage: Finalizado");
+    }
+  }
+
+[JSInvokable]
+public async Task OnIntersect()
+{
+  Console.WriteLine($"OnIntersect: Intersecção detectada para geração {activeGen}");
+  Console.WriteLine($"OnIntersect: Loading: {Current.Loading}, EndReached: {Current.EndReached}, Cards: {Current.Cards.Count}");
+  
+  if (!Current.Loading && !Current.EndReached)
+  {
+    Console.WriteLine("OnIntersect: Carregando mais Pokémon...");
+    await LoadPage(Current);
+  }
+  else
+  {
+    Console.WriteLine($"OnIntersect: Ignorando intersecção - Loading: {Current.Loading}, EndReached: {Current.EndReached}");
+  }
+}
+
+private async Task EnsureObserver()
+  {
+    Console.WriteLine("EnsureObserver: Configurando observer para infinite scroll");
+    try
+    {
+      await JS.InvokeVoidAsync("infiniteScroll.observe", "gen-sentinel", _selfRef!, "OnIntersect");
+      Console.WriteLine("EnsureObserver: Observer configurado com sucesso");
+    }
+    catch (Exception ex)
+    {
+      Console.WriteLine($"EnsureObserver: ERRO ao configurar observer - {ex.Message}");
+      Console.WriteLine($"EnsureObserver: StackTrace - {ex.StackTrace}");
+    }
+  }
+
+  private async Task SwitchGen(int g)
+  {
+    Console.WriteLine($"SwitchGen: Mudando da geração {activeGen} para {g}");
+    
+    try
+    {
+      var y = await JS.InvokeAsync<double>("scrollHelper.getScrollY");
+      Console.WriteLine($"SwitchGen: Posição atual do scroll: {y}");
+      
+      scrollPositions[activeGen] = y;
+      activeGen = g;
+      isLoadingMore = false;
+      errorMsg = null;
+      
+      Console.WriteLine($"SwitchGen: Garantindo carregamento da geração {g}");
+      await EnsureGenLoaded(g);
+      
+      Console.WriteLine($"SwitchGen: Reconfigurando observer");
+      await EnsureObserver();
+      
+      if (scrollPositions.TryGetValue(activeGen, out var prevY))
+      {
+        Console.WriteLine($"SwitchGen: Restaurando posição do scroll: {prevY}");
+        await JS.InvokeVoidAsync("scrollHelper.setScrollY", prevY);
+      }
+      else
+      {
+        Console.WriteLine($"SwitchGen: Primeira vez na geração {g}, indo para topo");
+        await JS.InvokeVoidAsync("scrollHelper.setScrollY", 0);
+      }
+      
+      Console.WriteLine($"SwitchGen: Mudança para geração {g} concluída");
+    }
+    catch (Exception ex)
+    {
+      Console.WriteLine($"SwitchGen: ERRO - {ex.Message}");
+      Console.WriteLine($"SwitchGen: StackTrace - {ex.StackTrace}");
+      errorMsg = $"Erro ao mudar para geração {g}: {ex.Message}";
+    }
+  }
+
+  private void OnKeyDown(KeyboardEventArgs e)
+  {
+    if (e.Key == "Enter") ExecuteSearch();
+  }
+
+  private void ExecuteSearch()
+  {
+    var input = query.Trim().ToLowerInvariant();
+    if (string.IsNullOrWhiteSpace(input)) return;
+    var exact = allNames.FirstOrDefault(n => n.Name.Equals(input, StringComparison.OrdinalIgnoreCase));
+    if (exact != null) GoToDetail(exact.Name);
+    else { suggestionsVisible = true; filteredSuggestions = allNames.Where(n => n.Name.Contains(input)).Take(10).ToList(); }
+  }
+
+  private void GoToDetail(string key)
+  {
+    suggestionsVisible = false;
+    filteredSuggestions.Clear();
+    Nav.NavigateTo($"/pokemon/{key}");
+  }
+
+  public async ValueTask DisposeAsync()
+  {
+    try { await JS.InvokeVoidAsync("infiniteScroll.unobserve", "gen-sentinel"); } catch { }
+    _selfRef?.Dispose();
+  }
+
+  private class GenState
+  {
+    public List<int> Ids { get; set; } = new();
+    public List<CardVM> Cards { get; set; } = new();
+    public int Offset { get; set; }
+    public bool Loading { get; set; }
+    public HashSet<int> LoadedIds { get; set; } = new();
+    public bool EndReached { get; set; }
+  }
+
+  private class CardVM
+  {
+    public int Id { get; set; }
+    public string Name { get; set; } = string.Empty;
+    public string Sprite { get; set; } = string.Empty;
+    public List<string> Types { get; set; } = new();
+    public bool IsFav { get; set; }
+  }
+
+private void ValidateRangesOrFail()
+{
+  var res = Pokedex.Utils.GenerationUtils.ValidateRanges(ranges);
+  rangeError = res.Ok ? null : res.Error;
+}
+  private string typeFilter = string.Empty;
+  private readonly List<string> allTypes = new() { "normal","fire","water","grass","electric","ice","fighting","poison","ground","flying","psychic","bug","rock","ghost","dragon","dark","steel","fairy" };
+
+  private IEnumerable<CardVM> VisibleCards()
+  {
+    var list = Current.Cards.AsEnumerable();
+    if (!string.IsNullOrWhiteSpace(typeFilter))
+      list = list.Where(c => Pokedex.Utils.TypeUtils.MatchesType(c.Types, typeFilter));
+    return list;
+  }
+
+  private static string Cap(string s)
+    => string.IsNullOrWhiteSpace(s) ? s : char.ToUpperInvariant(s[0]) + (s.Length > 1 ? s.Substring(1).ToLowerInvariant() : string.Empty);
+}

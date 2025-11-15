@@ -1,0 +1,14 @@
+{
+  "name": "pokedex-web",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Scripts de QA para métricas Lighthouse",
+  "scripts": {
+    "audit:perf": "lighthouse http://localhost:5000 --chrome-flags=\"--headless --no-sandbox\" --output=json --output-path=./lighthouse-report.json --only-categories=performance,accessibility,best-practices,seo",
+    "audit:perf:mobile": "lighthouse http://localhost:5000 --chrome-flags=\"--headless --no-sandbox\" --preset=perf --form-factor=mobile --screenEmulation.mobile=true --output=json --output-path=./lighthouse-report-mobile.json",
+    "audit:perf:desktop": "lighthouse http://localhost:5000 --chrome-flags=\"--headless --no-sandbox\" --preset=perf --form-factor=desktop --output=json --output-path=./lighthouse-report-desktop.json"
+  },
+  "devDependencies": {
+    "lighthouse": "^12.2.0"
+  }
+}

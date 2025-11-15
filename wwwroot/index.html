@@ -1,0 +1,116 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Pokédex</title>
+    <base href="/" />
+    <link href="css/app.css" rel="stylesheet" />
+  </head>
+  <body>
+    <div id="app">Carregando...</div>
+    <script src="_framework/blazor.webassembly.js"></script>
+    <script>
+      window.pokedexLocalStorage = {
+        getItem: (key) => {
+          try { return window.localStorage.getItem(key); } catch { return null; }
+        },
+        setItem: (key, value) => {
+          try { window.localStorage.setItem(key, value); return true; } catch { return false; }
+        },
+        removeItem: (key) => {
+          try { window.localStorage.removeItem(key); return true; } catch { return false; }
+        }
+      };
+      window.infiniteScroll = {
+        observe: (id, dotnet, method) => {
+          console.log(`InfiniteScroll: Configurando observer para elemento ${id}`);
+          const el = document.getElementById(id);
+          if (!el) {
+            console.error(`InfiniteScroll: Elemento ${id} não encontrado`);
+            return;
+          }
+          
+          // Limpar observer existente se houver
+          if (el._observer) {
+            console.log(`InfiniteScroll: Removendo observer existente para ${id}`);
+            el._observer.disconnect();
+            delete el._observer;
+          }
+          
+          const obs = new IntersectionObserver((entries) => {
+            console.log(`InfiniteScroll: Observer disparado para ${id}`, entries);
+            entries.forEach(e => { 
+              if (e.isIntersecting) { 
+                console.log(`InfiniteScroll: Elemento ${id} visível, chamando método ${method}`);
+                dotnet.invokeMethodAsync(method)
+                  .then(() => console.log(`InfiniteScroll: Método ${method} executado com sucesso`))
+                  .catch(err => console.error(`InfiniteScroll: Erro ao executar método ${method}:`, err));
+              } 
+            });
+          }, { 
+            root: null, 
+            rootMargin: '300px', 
+            threshold: 0.01 
+          });
+          
+          obs.observe(el);
+          el._observer = obs;
+          console.log(`InfiniteScroll: Observer configurado com sucesso para ${id}`);
+        },
+        unobserve: (id) => {
+          console.log(`InfiniteScroll: Removendo observer para ${id}`);
+          const el = document.getElementById(id);
+          if (el && el._observer) { 
+            el._observer.disconnect(); 
+            delete el._observer; 
+            console.log(`InfiniteScroll: Observer removido com sucesso para ${id}`);
+          } else {
+            console.warn(`InfiniteScroll: Nenhum observer encontrado para ${id}`);
+          }
+        }
+      };
+      window.scrollHelper = {
+        getScrollY: () => window.scrollY || document.documentElement.scrollTop || document.body.scrollTop || 0,
+        setScrollY: (y) => { window.scrollTo({ top: y, behavior: 'instant' }); }
+      };
+
+      window.contrastHelper = {
+        _relLum: (r,g,b) => {
+          const srgb = [r,g,b].map(v => v/255);
+          const lin = srgb.map(v => v <= 0.03928 ? v/12.92 : Math.pow((v+0.055)/1.055, 2.4));
+          return 0.2126*lin[0] + 0.7152*lin[1] + 0.0722*lin[2];
+        },
+        _contrast: (lum1, lum2) => {
+          const L1 = Math.max(lum1, lum2);
+          const L2 = Math.min(lum1, lum2);
+          return (L1 + 0.05) / (L2 + 0.05);
+        },
+        adjustBadges: () => {
+          const els = document.querySelectorAll('.type');
+          els.forEach(el => {
+            const cs = getComputedStyle(el);
+            const bg = cs.backgroundColor;
+            const m = bg && bg.match(/rgba?\((\d+),\s*(\d+),\s*(\d+)/i);
+            if (!m) return;
+            const r = parseInt(m[1],10), g = parseInt(m[2],10), b = parseInt(m[3],10);
+            const lumBg = window.contrastHelper._relLum(r,g,b);
+            const lumWhite = window.contrastHelper._relLum(255,255,255);
+            const lumBlack = window.contrastHelper._relLum(0,0,0);
+            const cWhite = window.contrastHelper._contrast(lumBg, lumWhite);
+            const cBlack = window.contrastHelper._contrast(lumBg, lumBlack);
+            el.style.color = cWhite >= cBlack ? '#ffffff' : '#000000';
+            // garantir peso normal conforme especificação
+            el.style.fontWeight = 'normal';
+          });
+        },
+        observe: () => {
+          const obs = new MutationObserver(() => window.contrastHelper.adjustBadges());
+          obs.observe(document.body, { childList: true, subtree: true });
+          window.contrastHelper.adjustBadges();
+        }
+      };
+      document.addEventListener('DOMContentLoaded', () => window.contrastHelper.observe());
+    </script>
+  </body>
+</html>

@@ -1,0 +1,145 @@
+@using Pokedex.Models
+@inject IPokeApiService Api
+
+<div class="tabs">
+  <button class="tab" @onclick="() => SetTab(0)" aria-selected="@(active==0)">Estatísticas</button>
+  <button class="tab" @onclick="() => SetTab(1)" aria-selected="@(active==1)">Habilidades</button>
+  <button class="tab" @onclick="() => SetTab(2)" aria-selected="@(active==2)">Movimentos</button>
+  <button class="tab" @onclick="() => SetTab(3)" aria-selected="@(active==3)">Evoluções</button>
+</div>
+
+<div class="tab-content">
+  @if (active == 0)
+  {
+    <div class="stats">
+      @foreach (var s in Stats)
+      {
+        var pct = Math.Min(1.0, s.BaseStat / 180.0);
+        <div class="stat">
+          <span>@Cap(s.Stat.Name)</span>
+          <div class="bar"><div style="width:@((pct*100).ToString("0"))%"></div></div>
+          <span>@s.BaseStat</span>
+        </div>
+      }
+    </div>
+  }
+  else if (active == 1)
+  {
+    <ul class="abilities-list">
+      @foreach (var a in Abilities)
+      {
+        <li>
+              <strong>@Cap(a.Name)</strong>
+              @if (!string.IsNullOrWhiteSpace(a.Description))
+              {
+                <p>@a.Description</p>
+              }
+            </li>
+      }
+    </ul>
+  }
+  else if (active == 2)
+  {
+    <div class="moves">
+      @foreach (var method in MoveGroups)
+      {
+        <section class="move-group">
+          <header class="move-group-header">
+            <span class="badge">@Cap(method.Key)</span>
+          </header>
+          @foreach (var typeGroup in method.GroupBy(m => m.TypeName))
+          {
+            <div class="move-type">
+              <span class="type @typeGroup.Key">@Cap(typeGroup.Key)</span>
+            </div>
+            <div class="move-cards">
+              @foreach (var m in typeGroup)
+              {
+                <article class="move-card">
+                  <div class="move-title">
+                    <strong>@Cap(m.Name)</strong>
+                    @if (m.Exclusive)
+                    {
+                      <span class="badge exclusive" title="Exclusivo">★</span>
+                    }
+                  </div>
+                  <div class="move-meta">
+                    <span class="pill">Pwr: @(m.Power?.ToString() ?? "-")</span>
+                    <span class="pill">Acc: @(m.Accuracy?.ToString() ?? "-")</span>
+                    <span class="pill">PP: @(m.PP?.ToString() ?? "-")</span>
+                    @if (!string.IsNullOrWhiteSpace(m.DamageClass))
+                    {
+                      <span class="pill">@Cap(m.DamageClass)</span>
+                    }
+                  </div>
+                </article>
+              }
+            </div>
+          }
+        </section>
+      }
+    </div>
+  }
+  else if (active == 3)
+  {
+    <div class="evo">
+      @foreach (var step in Evolution)
+      {
+        <div class="evo-step">
+          <img src="@step.Sprite" alt="@step.Name" width="48" height="48" />
+          <div>
+            <div>@Cap(step.Name)</div>
+            @if (!string.IsNullOrWhiteSpace(step.Details))
+            {
+              <div class="tag">@step.Details</div>
+            }
+          </div>
+        </div>
+      }
+    </div>
+  }
+</div>
+
+@code {
+    public class AbilityVM { public string Name { get; set; } = string.Empty; public string Description { get; set; } = string.Empty; }
+    public class MoveVM {
+      public string Name { get; set; } = string.Empty;
+      public string Method { get; set; } = string.Empty;
+      public string TypeName { get; set; } = "normal";
+      public int? Power { get; set; }
+      public int? Accuracy { get; set; }
+      public int? PP { get; set; }
+      public string DamageClass { get; set; } = string.Empty;
+      public bool Exclusive { get; set; }
+    }
+
+    [Parameter, EditorRequired] public List<StatSlot> Stats { get; set; } = new();
+    [Parameter, EditorRequired] public List<AbilityVM> Abilities { get; set; } = new();
+    [Parameter, EditorRequired] public List<MoveVM> Moves { get; set; } = new();
+    [Parameter, EditorRequired] public List<EvolutionNode> Evolution { get; set; } = new();
+
+    private int active = 0;
+    private IEnumerable<IGrouping<string, MoveVM>> MoveGroups
+        => Moves.GroupBy(m => m.Method);
+
+    private void SetTab(int idx) => active = idx;
+  public static string Cap(string s)
+        => string.IsNullOrWhiteSpace(s) ? s : char.ToUpperInvariant(s[0]) + (s.Length > 1 ? s.Substring(1).ToLowerInvariant() : string.Empty);
+}
+
+<style>
+.tab-content { margin-top: 1rem; }
+.abilities-list { list-style: none; padding: 0; }
+.abilities-list li { margin-bottom: 0.75rem; }
+.abilities-list p { margin: 0.25rem 0 0 0; font-size: 0.9rem; color: #4b5563; }
+.moves details { margin-bottom: 0.5rem; }
+.moves .move-group { margin-bottom: 1rem; }
+.moves .move-group-header { display:flex; align-items:center; gap:8px; margin-bottom: .5rem; }
+.moves .move-type { margin: .25rem 0 .5rem 0; }
+.moves .move-cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 8px; }
+.moves .move-card { border: 1px solid var(--card-border); border-radius: 10px; padding: 8px; background: var(--card-bg); display:flex; flex-direction: column; gap:6px; }
+.moves .move-title { display:flex; align-items:center; justify-content: space-between; }
+.moves .move-meta { display:flex; flex-wrap:wrap; gap:6px; }
+.pill { display:inline-block; padding: 2px 6px; border-radius: 999px; background:#eef2ff; color:#1f2937; font-size:.75rem; border:1px solid #e5e7eb; }
+.badge.exclusive { background:#fde68a; color:#111827; border:1px solid #f59e0b; }
+</style>

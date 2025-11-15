@@ -1,0 +1,190 @@
+@page "/pokemon/{key}"
+@inject IPokeApiService Api
+@inject ILocalStorageService Storage
+@inject NavigationManager Nav
+@inject IJSRuntime JS
+@using Pokedex.Shared
+
+<section class="container">
+  <div class="actions" style="margin-bottom: 1rem; display:flex; gap:.5rem; align-items:center;">
+    <button class="btn" @onclick="GoBack">Voltar</button>
+  </div>
+  @if (errorMsg != null)
+  {
+    <div role="alert">@errorMsg</div>
+  }
+  @if (isLoading)
+  {
+    <Pokedex.Shared.Loading Visible="true" />
+  }
+  else if (pokemon != null)
+  {
+    <article class="card">
+      <div class="card-header">
+        <strong>@pokemon.Name</strong>
+        <span class="card-id">#@pokemon.Id</span>
+      </div>
+      <img src="@pokemon.Sprites.FrontDefault" alt="Sprite de @pokemon.Name" />
+      <div class="types">
+        @if (pokemon.Types != null && pokemon.Types.Count > 0)
+        {
+          foreach (var t in pokemon.Types.Select(t=>t.Type.Name))
+          {
+            <span class="type @t">@Cap(t)</span>
+          }
+        }
+        else
+        {
+          <span class="type normal">Normal</span>
+        }
+      </div>
+      <TypeRelations Types="(pokemon.Types?.Select(t=>t.Type.Name).ToList() ?? new())" />
+      <div class="actions">
+        <button class="btn" aria-label="@favLabel" @onclick="ToggleFavorite">@(isFav ? "❤ Remover dos favoritos" : "❤ Adicionar aos favoritos")</button>
+      </div>
+      <PokemonTabs Stats="pokemon.Stats" Abilities="abilities.Select(a=>new Pokedex.Shared.PokemonTabs.AbilityVM{Name=a.Name,Description=a.Description}).ToList()" Moves="moves.Select(m=>new Pokedex.Shared.PokemonTabs.MoveVM{Name=m.Name,Method=m.Method}).ToList()" Evolution="(evolution==null?new():Flatten(evolution).ToList())" />
+    </article>
+  }
+</section>
+
+@code {
+  [Parameter] public string key { get; set; } = string.Empty;
+  private Pokemon? pokemon;
+  private bool isLoading = true;
+  private string? errorMsg;
+  private EvolutionNode? evolution;
+  private bool isFav;
+  private string favLabel = "Adicionar aos favoritos";
+  private List<AbilityVM> abilities = new();
+  private List<MoveVM> moves = new();
+
+  protected override async Task OnParametersSetAsync()
+  {
+    isLoading = true;
+    errorMsg = null;
+    try
+    {
+      var k = key.Trim();
+      if (int.TryParse(k, out var id) && id > 0) pokemon = await Api.GetPokemonAsync(id.ToString());
+      else pokemon = await Api.GetPokemonAsync(k.ToLowerInvariant());
+      if (pokemon == null) { errorMsg = "Pokémon não encontrado"; return; }
+
+      var favs = await Storage.GetAsync<List<Favorite>>("favorites") ?? new List<Favorite>();
+      isFav = favs.Any(f => f.PokemonId == pokemon.Id);
+      favLabel = isFav ? "Remover dos favoritos" : "Adicionar aos favoritos";
+
+      abilities.Clear();
+      foreach (var ab in pokemon.Abilities)
+      {
+        var det = await Api.GetAbilityAsync(ab.Ability.Name);
+        var desc = det?.EffectEntries.FirstOrDefault(e => e.Language.Name == "en")?.ShortEffect ?? "";
+        abilities.Add(new AbilityVM { Name = ab.Ability.Name, Description = desc });
+      }
+      moves.Clear();
+      var mv = await Api.GetPokemonMovesAsync(pokemon.Name);
+      if (mv != null)
+      {
+        var basics = mv
+          .Where(m => m.VersionGroupDetails.Any())
+          .SelectMany(m => m.VersionGroupDetails.Select(vgd => new { Move = m.Move.Name, Method = vgd.MoveLearnMethod.Name }))
+          .GroupBy(x => new { x.Move, x.Method })
+          .Select(g => g.Key)
+          .Take(40)
+          .ToList();
+
+        var detailTasks = basics.Select(b => Api.GetMoveDetailAsync(b.Move)).ToList();
+        var details = await Task.WhenAll(detailTasks);
+        for (int i = 0; i < basics.Count; i++)
+        {
+          var b = basics[i];
+          var d = details[i];
+          moves.Add(new MoveVM {
+            Name = b.Move,
+            Method = b.Method ?? "desconhecido",
+            TypeName = d?.Type?.Name ?? "normal",
+            Power = d?.Power,
+            Accuracy = d?.Accuracy,
+            PP = d?.PP,
+            DamageClass = d?.DamageClass?.Name ?? "",
+            Exclusive = string.Equals(b.Method, "egg", StringComparison.OrdinalIgnoreCase)
+          });
+        }
+      }
+
+      var species = await Api.GetSpeciesAsync(pokemon.Id);
+      if (species?.EvolutionChain?.Url is { Length: >0 } url)
+      {
+        var chain = await Api.GetEvolutionChainAsync(url);
+        if (chain?.Chain != null)
+        {
+          evolution = await BuildTree(chain.Chain);
+        }
+      }
+    }
+    catch
+    {
+      errorMsg = "Erro ao carregar detalhes.";
+    }
+    finally { isLoading = false; }
+  }
+
+  private async Task<EvolutionNode> BuildTree(ChainLink link)
+  {
+    var node = new EvolutionNode { Name = link.Species.Name };
+    var p = await Api.GetPokemonAsync(link.Species.Name);
+    node.Sprite = p?.Sprites.FrontDefault;
+    node.Details = link.EvolutionDetails.Count > 0 ? DetailText(link.EvolutionDetails[0]) : string.Empty;
+    foreach (var next in link.EvolvesTo)
+    {
+      node.Next.Add(await BuildTree(next));
+    }
+    return node;
+  }
+
+  private static IEnumerable<EvolutionNode> Flatten(EvolutionNode root)
+  {
+    yield return root;
+    foreach (var n in root.Next)
+      foreach (var x in Flatten(n))
+        yield return x;
+  }
+
+  private static string DetailText(EvolutionDetail d)
+  {
+    var parts = new List<string>();
+    if (d.MinLevel is int ml) parts.Add($"Lvl {ml}");
+    if (d.Trigger?.Name is string tr && tr.Length>0) parts.Add(tr);
+    if (d.Item?.Name is string it && it.Length>0) parts.Add(it);
+    return string.Join(" • ", parts);
+  }
+
+  private async Task ToggleFavorite()
+  {
+    if (pokemon == null) return;
+    var favs = await Storage.GetAsync<List<Favorite>>("favorites") ?? new List<Favorite>();
+    var existing = favs.FirstOrDefault(f => f.PokemonId == pokemon.Id);
+    if (existing != null) { favs.Remove(existing); favLabel = "Adicionar aos favoritos"; isFav = false; }
+    else { favs.Add(new Favorite { PokemonId = pokemon.Id }); favLabel = "Remover dos favoritos"; isFav = true; }
+    await Storage.SetAsync("favorites", favs);
+  }
+
+  private async Task GoBack()
+  {
+    try { await JS.InvokeVoidAsync("history.back"); }
+    catch { Nav.NavigateTo("/"); }
+  }
+
+  private class AbilityVM { public string Name { get; set; } = string.Empty; public string Description { get; set; } = string.Empty; }
+  private class MoveVM {
+    public string Name { get; set; } = string.Empty;
+    public string Method { get; set; } = string.Empty;
+    public string TypeName { get; set; } = "normal";
+    public int? Power { get; set; }
+    public int? Accuracy { get; set; }
+    public int? PP { get; set; }
+    public string DamageClass { get; set; } = string.Empty;
+    public bool Exclusive { get; set; }
+  }
+  public static string Cap(string s)
+    => string.IsNullOrWhiteSpace(s) ? s : char.ToUpperInvariant(s[0]) + (s.Length > 1 ? s.Substring(1).ToLowerInvariant() : string.Empty);
+}

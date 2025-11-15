@@ -1,0 +1,79 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Pokédex</title>
+    <base href="/" />
+    <link href="css/app.css" rel="stylesheet" />
+  </head>
+  <body>
+    <div id="app">Carregando...</div>
+    <script src="_framework/blazor.webassembly.js"></script>
+    <script>
+      window.pokedexLocalStorage = {
+        getItem: (key) => {
+          try { return window.localStorage.getItem(key); } catch { return null; }
+        },
+        setItem: (key, value) => {
+          try { window.localStorage.setItem(key, value); return true; } catch { return false; }
+        },
+        removeItem: (key) => {
+          try { window.localStorage.removeItem(key); return true; } catch { return false; }
+        }
+      };
+      window.infiniteScroll = {
+        observe: (id, dotnet, method) => {
+          console.log(`InfiniteScroll: Configurando observer para elemento ${id}`);
+          const el = document.getElementById(id);
+          if (!el) {
+            console.error(`InfiniteScroll: Elemento ${id} não encontrado`);
+            return;
+          }
+          
+          // Limpar observer existente se houver
+          if (el._observer) {
+            console.log(`InfiniteScroll: Removendo observer existente para ${id}`);
+            el._observer.disconnect();
+            delete el._observer;
+          }
+          
+          const obs = new IntersectionObserver((entries) => {
+            console.log(`InfiniteScroll: Observer disparado para ${id}`, entries);
+            entries.forEach(e => { 
+              if (e.isIntersecting) { 
+                console.log(`InfiniteScroll: Elemento ${id} visível, chamando método ${method}`);
+                dotnet.invokeMethodAsync(method)
+                  .then(() => console.log(`InfiniteScroll: Método ${method} executado com sucesso`))
+                  .catch(err => console.error(`InfiniteScroll: Erro ao executar método ${method}:`, err));
+              } 
+            });
+          }, { 
+            root: null, 
+            rootMargin: '300px', 
+            threshold: 0.01 
+          });
+          
+          obs.observe(el);
+          el._observer = obs;
+          console.log(`InfiniteScroll: Observer configurado com sucesso para ${id}`);
+        },
+        unobserve: (id) => {
+          console.log(`InfiniteScroll: Removendo observer para ${id}`);
+          const el = document.getElementById(id);
+          if (el && el._observer) { 
+            el._observer.disconnect(); 
+            delete el._observer; 
+            console.log(`InfiniteScroll: Observer removido com sucesso para ${id}`);
+          } else {
+            console.warn(`InfiniteScroll: Nenhum observer encontrado para ${id}`);
+          }
+        }
+      };
+      window.scrollHelper = {
+        getScrollY: () => window.scrollY || document.documentElement.scrollTop || document.body.scrollTop || 0,
+        setScrollY: (y) => { window.scrollTo({ top: y, behavior: 'instant' }); }
+      };
+    </script>
+  </body>
+</html>
